@@ -45,5 +45,5 @@ $sites = array(
     'infogeral.com' => 'www',
     'infogeral.com.br' => 'www',
     'www.infogeral.com' => 'www',
-    'www.infogeral.com.br' => 'www,'
+    'www.infogeral.com.br' => 'www'
 );
