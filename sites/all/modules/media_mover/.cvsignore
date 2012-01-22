@@ -1,0 +1,6 @@
+.project
+.cache
+.settings
+resources
+src
+.buildpath

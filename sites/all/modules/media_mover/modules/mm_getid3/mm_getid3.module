@@ -1,0 +1,124 @@
+<?php
+
+
+/**
+ * @file
+ * This provides Media Mover to GetId3 interoperability
+ *
+ * @TODO need to bug check all of this against
+ *       known meta data
+ */
+
+
+/**
+ * Implementation of hook_media_mover()
+ */
+function mm_getid3_media_mover() {
+  switch ($op) {
+    case 'name':
+      return "GetId3 module";
+      break;
+
+    case 'actions':
+      return array(
+        'process' => array('read' => t('Read GetId3 meta data')),
+        'storage' => array('read' => t('Read GetId3 meta data')),
+        'complete' => array('read' => t('Read GetId3 meta data')),
+        'process' => array('write' => t('Write GetId3 meta data')),
+        'storage' => array('write' => t('Write FLV meta data')),
+        'complete' => array('write' => t('Write FLV meta data')),
+      );
+      break;
+
+    // We can act on any Media Mover process
+    case 'storage':
+    case 'complete':
+    case 'process':
+      switch ($action_id) {
+        case 'read':
+          return mm_getid3_meta_read($file, $configuration);
+        break;
+        case 'write':
+          return mm_getid3_meta_write($file, $configuration);
+        break;
+      }
+    break;
+
+    case 'config':
+      switch ($action_id) {
+        case 'read':
+          return mm_getid3_meta_read_config($configuration);
+        break;
+        case 'write':
+          return mm_getid3_meta_write_config($configuration);
+        break;
+      }
+    break;
+
+    break;
+  }
+}
+
+
+/**
+ * Configuration options for reading meta data
+ *
+ * @param unknown_type $configuration
+ * @return unknown
+ */
+function mm_getid3_meta_read_config($configuration) {
+  return $form;
+}
+
+
+/**
+ * Configuration options for writing meta data
+ *
+ * @param unknown_type $configuration
+ * @return unknown
+ */
+function mm_getid3_meta_write_config($configuration) {
+  return $form;
+}
+
+
+/**
+ * Write GetId3 metadata to the file
+ *
+ * @param unknown_type $file
+ * @param unknown_type $configuration
+ * @return unknown
+ */
+function mm_getid3_meta_write(&$file, $configuration) {
+  // get the file path that we are going to attach
+  $filepath = media_mover_api_config_current_file($file);
+
+  // Do some stuff to the file
+  return true;
+
+  // Failure
+  return false;
+}
+
+
+/**
+ * Read metadata from the file
+ *
+ * @param unknown_type $file
+ * @param unknown_type $configuration
+ * @return unknown
+ */
+function mm_getid3_meta_read(&$file, $configuration) {
+  // get the file path that we are going to attach
+  $filepath = media_mover_api_config_current_file($file);
+
+  // Do some stuff to the file
+
+  // Add our meta data to the file
+  $file['data']['getid3'] = $meta;
+  // return the filepath
+  return true;
+
+  // Failure
+  return false;
+}

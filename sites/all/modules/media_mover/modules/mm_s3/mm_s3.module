@@ -1,0 +1,738 @@
+<?php
+
+
+/**
+ * @file
+ *
+ * S3 implementation for media mover
+ */
+
+define('ACL_PRIVATE', 'private');
+define('ACL_PUBLIC_READ', 'public-read');
+define('ACL_PUBLIC_READ_WRITE', 'public-read-write');
+
+
+/* ************************************************ */
+/* Drupal hooks */
+/* ************************************************ */
+
+/**
+ * Implements hook_menu().
+ */
+function mm_s3_menu() {
+  // test page
+  $items['admin/build/media_mover/tests/mm_s3'] = array(
+    'title' => 'S3 Test',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mm_s3_test_form'),
+    'access arguments' => array('administer media_mover'),
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'mm_s3_test.inc',
+  );
+
+  // Settings page
+  $items['admin/build/media_mover/settings/mm_s3'] = array(
+    'title' => 'S3',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('mm_s3_admin_form'),
+    'access arguments' => array('administer media_mover'),
+    'type' => MENU_LOCAL_TASK,
+    'file' => 'mm_s3_test.inc',
+  );
+  return $items;
+}
+
+
+/* ************************************************ */
+/* Contrib hooks */
+/* ************************************************ */
+
+
+/**
+ * Implements hook_media_mover().
+ */
+function mm_s3_media_mover() {
+  $items = array();
+  $items['mm_s3_store'] = array(
+    'description' => t('Store: on Amazon s3'),
+    'callback' => 'mm_s3_send',
+    'configuration' => 'mm_s3_config',
+    'delete' => 'mm_s3_unlink',
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_filepath_alter
+ */
+function mm_s3_media_mover_filepath_alter(&$file) {
+
+
+  // We need to load any media mover files
+  if ($mm_files = media_mover_api_file_get_fid($file->fid, 'mm_s3')) {
+    // We only deal with one
+    $mm_file = array_shift($mm_files);
+    // Get the s3 data from the mmfile
+    if ($s3 = $mm_file->data_get('s3')) {
+      $path = mm_s3_create_uri($s3);
+      $file->filepath = $path;
+    }
+  }
+}
+
+/**
+ * Settings for S3
+ */
+function mm_s3_admin_form() {
+  $form['mm_s3'] = array(
+    '#element_validate' => array('mm_s3_admin_validate')
+  );
+  $form['mm_s3']['markup'] = array(
+    '#type' => 'markup',
+    '#description' => t('Global settings for Media Mover S3 configurations.
+      You can test your settings by doing a !link.',
+      array('!link' => l(t('S3 test'), 'admin/build/media_mover/tests/mm_s3'))),
+  );
+
+  $form['mm_s3']['mm_s3_bucket'] = array(
+    '#type' => 'textfield',
+    '#title' => t('S3 Bucket'),
+    '#default_value' => variable_get('mm_s3_bucket', str_replace(' ', '_', variable_get('site_name', t('My Site')))),
+    '#description' => t("Name of the S3 bucket, note this has to be unique. This can be overridden by a configuration, but this is the default value."),
+  );
+
+  $form['mm_s3']['mm_s3_default_perm'] = array(
+    '#type' => 'select',
+    '#options' => mm_s3_file_acl(),
+    '#title' => t('S3 Default Permissions'),
+    '#default_value' => variable_get('mm_s3_default_perm', ACL_PUBLIC_READ),
+    '#description' => t('Default permissions on files and buckets created on S3'),
+  );
+
+  $form['mm_s3']['mm_s3_default_server_url'] = array(
+    '#type' => 'textfield',
+    '#title' => t('S3 URL'),
+    '#default_value' => variable_get('mm_s3_default_server_url', "s3.amazonaws.com"),
+    '#description' => t('URL to send to amazon. You probably do not need to change this.'),
+  );
+
+  $form['mm_s3']['mm_s3_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('S3 Key'),
+    '#default_value' => variable_get('mm_s3_key', ""),
+    '#description' => t("S3 key."),
+  );
+
+  $form['mm_s3']['mm_s3_skey'] = array(
+    '#type' => 'textfield',
+    '#title' => t('S3 Secret Key'),
+    '#default_value' => variable_get('mm_s3_skey', ""),
+    '#description' => t("S3 secret key."),
+  );
+
+  return system_settings_form($form);
+}
+
+
+/**
+ * Validate the connection specified in the admin settings
+ * @param $element
+ * @param $form_element
+ */
+function mm_s3_admin_validate($element, &$form_state) {
+  // only validate if we have both values
+  if ($form_state['values']['mm_s3_key'] && $form_state['values']['mm_s3_skey']) {
+    // we need to verify the parameters being passed in
+    if (! $s3 = mm_s3_initialize($form_state['values']['mm_s3_key'], $form_state['values']['mm_s3_skey'])) {
+      form_error($element, t('Could not connect to S3, check your keys?'));
+      return;
+    }
+
+    // Does this bucket exist?
+    if (! mm_s3_is_dir($form_state['values']['mm_s3_bucket'], $s3)) {
+      // try to create the bucket
+      if (! $s3->putBucket($form_state['values']['mm_s3_bucket'],  $form_state['values']['mm_s3_default_perm'], FALSE, FALSE)) {
+        form_error($element, t('Could not create your bucket on the Amazon servers. You need to choose a different name'));
+      }
+    }
+  }
+}
+
+
+/* ************************************************ */
+/* Internal functions                               */
+/* ************************************************ */
+
+
+/**
+ * Builds the default list of file/bucket permissions
+ *
+ * @return array
+ */
+function mm_s3_file_acl() {
+  $options = array(
+    ACL_PUBLIC_READ => t('Public read'),
+    ACL_PUBLIC_READ_WRITE => t('Public read and write'),
+    ACL_PRIVATE => t('Private'),
+  );
+  return $options;
+}
+
+
+/**
+ * Builds the form to display on the media mover setup
+ */
+function mm_s3_config($step) {
+  $form['mm_s3'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('S3 configuration'),
+    '#collapsed' => FALSE,
+    '#element_validate' => array('mm_s3_validate_action_settings'),
+  );
+
+  $form['mm_s3']['mm_s3_bucket'] = array(
+    '#type' => 'textfield',
+    '#title' => t('S3 Bucket'),
+    '#default_value' => isset($step->settings['mm_s3_bucket']) ? $step->settings['mm_s3_bucket'] : variable_get('mm_s3_bucket', str_replace(" ", "_", variable_get('site_name', 'my_site'))),
+    '#description' => t("Name of the S3 bucket, note this has to be unique on Amazon's servers"),
+  );
+
+  $form['mm_s3']['perms'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('File permissions'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE
+  );
+
+  $form['mm_s3']['perms']['mm_s3_perm'] = array(
+    '#type' => 'radios',
+    '#title' => t('S3 file permissions'),
+    '#options' => mm_s3_file_acl(),
+    '#default_value' => isset($step->settings['mm_s3_perm']) ? $step->settings['mm_s3_perm'] : ACL_PUBLIC_READ,
+    '#description' => t('Set the permissions on your uploaded files. If you choose to use
+      private files files are only accessible via a special URI. You will need to select
+      which user roles have access to these files.'),
+    '#attributes' => array(
+      'class' => 'mm_custom_field_display',
+    ),
+  );
+
+  $form['mm_s3']['perms']['mm_s3_drupal_perms_roles'] = array(
+    '#type' => 'select',
+    '#multiple' => TRUE,
+    '#options' => user_roles(TRUE),
+    '#title' => t('Allowed roles'),
+    '#description' => t('Your can restrict access to this file to certian roles.'),
+    '#default_value' => isset($step->settings['mm_s3_drupal_perms_roles']) ? $step->settings['mm_s3_drupal_perms_roles'] : array(),
+    '#attributes' => array(
+      'class' => 'mm_custom_field_field',
+      'mm_custom_field_value' => ACL_PRIVATE
+     ),
+  );
+
+  $form['mm_s3']['perms']['mm_s3_drupal_perms_time'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Access time'),
+    '#size' => 6,
+    '#description' => t('Links to your protected files will expire after a set amount of time. Default value is 3600 seconds (1 hour).'),
+    '#default_value' => isset($step->settings['mm_s3_drupal_perms_time']) ? $step->settings['mm_s3_drupal_perms_time'] : 3600,
+    '#attributes' => array(
+      'class' => 'mm_custom_field_field',
+      'mm_custom_field_value' => ACL_PRIVATE
+     ),
+  );
+
+  $form['mm_s3']['filepath_options'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Filepath options'),
+    '#collapsed' => TRUE,
+    '#collapsible' => TRUE,
+  );
+
+  $options = array(
+    'filename' => t('File name'),
+    'full_filepath' => t('Full file path'),
+    'custom' => t('Custom file prefix'),
+  );
+  $form['mm_s3']['filepath_options']['filepath'] = array(
+    '#type' => 'radios',
+    '#title' => t('Filepath options'),
+    '#description' => t('You can determine how your files are stored on S3.
+      <ul><li>Choosing "File name" will store the file by name on S3.</li>
+      <li>Choosing "Full file path" will store the current path to the file- use this for simple CDN URL rewriting.</li.
+      <li>Choosing "Custom file prefix" allows you to define an prefix for the file.</li></ul>'),
+    '#options' => $options,
+    '#default_value' => isset($step->settings['filepath']) ? $step->settings['filepath'] : 'filename',
+    '#attributes' => array(
+      'class' => 'mm_custom_field_display',
+     )
+  );
+  $form['mm_s3']['filepath_options']['filepath_custom'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Custom file prefix'),
+    '#description' => t('A custom prefix that you can add for your files. This is a file path
+      with no trailing path. For example <em>my/new/files</em> would prefix all your files with
+      this directory path. This uses the filename as the last part of the path- for example,
+      <em>my/newfiles/file.flv</em>'),
+    '#default_value' => isset($step->settings['filepath_custom']) ? $step->settings['filepath_custom'] : '',
+    '#weight' => 10,
+    '#attributes' => array(
+      'class' => 'mm_custom_field_field',
+      'mm_custom_field_value' => 'custom',
+    ),
+  );
+
+  $form['mm_s3']['advanced'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Advanced'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+  );
+
+  $form['mm_s3']['advanced']['s3_domain'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Amazon domain'),
+    '#default_value' => isset($step->settings['s3_domain']) ? $step->settings['s3_domain'] : variable_get('mm_s3_default_server_url', 's3.amazonaws.com'),
+    '#description' => t('If you are using a custom domain to serve your S3 content
+      define the domain here. By default this is: s3.amazonaws.com.'
+    ),
+  );
+
+  $form['mm_s3']['advanced']['advanced_request_headers'] = array(
+    '#type' => 'textarea',
+    '#title' => t('Request headers'),
+    '#default_value' => isset($step->settings['advanced_request_headers']) ? $step->settings['advanced_request_headers'] : FALSE,
+    '#description' => t('Enter custom headers to be saved on S3 for your
+      uploaded files. These should be key|value pairs. For example you
+      might use: <em>Content-Disposition|attachment</em>'),
+    '#size' => 5,
+  );
+
+  return $form;
+}
+
+
+/**
+ * validates the settings of this action
+ * @param $configuration
+ * @return unknown_type
+ */
+function mm_s3_validate_action_settings($element, &$form_state) {
+  // @TODO these validation steps need to be checked
+  return;
+  // Media Mover API will extract the corect data for this since all
+  // the form elements are prefixed by media mover when the are displayed
+  if ($values = media_mover_api_validate_form_data_extract($element)) {
+    // buckets must be lower case
+    if ($values['mm_s3_bucket'] != drupal_strtolower($values['mm_s3_bucket'])) {
+      form_error($element, t('Your bucket name must be lower case.'));
+    }
+    // alert on delete
+    if ($values['mm_s3_delete_source']) {
+      drupal_set_message(t('You have choosen to delete your source material.
+        Please be aware that this will remove files from your server\'s file system')
+      );
+    }
+
+    // validate S3 config
+    if ($s3 = mm_s3_initialize()) {
+      // does this bucket exist?
+      if (! mm_s3_is_dir($values['mm_s3_bucket'], $s3)) {
+        // try to create the bucket
+        if (! $s3->putBucket($values['mm_s3_bucket'],  $values['mm_s3_perm'], FALSE, FALSE)) {
+          form_error($element, t('Could not create your bucket on the Amazon servers. You need to choose a different name'));
+        }
+      }
+    }
+  }
+}
+
+
+
+/**
+ * Sends file to s3
+ *
+ * @param $step
+ *   Object, media mover step
+ * @param $file
+ *   Object, media mover file
+ */
+function mm_s3_send($step, $file) {
+  // load the S3 class
+  if (! $s3 = mm_s3_initialize()) {
+    return FALSE;
+  }
+
+  // can we read the file?
+  if (! is_readable($file->filepath)) {
+    watchdog('mm_s3', 'Source file !source is not readable',
+      array('!source' => $file->filepath), WATCHDOG_ERROR, l($file->mmfid, 'admin/build/media_mover/file/edit/'. $file->mmfid));
+    return;
+  }
+
+  // Create the bucket on S3 if it does not exist
+  if (! mm_s3_is_dir($step->settings['mm_s3_bucket'])) {
+    mm_s3_mkdir($step->settings['mm_s3_bucket'], $step->settings['mm_s3_perm']);
+  }
+
+  // Set the S3 filename based on settings
+  if ($step->settings['filepath'] == 'filename') {
+  	$s3_filename = basename($file->filepath);
+  }
+  // Use the full filepath
+  elseif ($step->settings['filepath'] == 'full_filepath') {
+    $s3_filename = $file->filepath;
+  }
+  // Use a custom filepath
+  else {
+    $s3_filename = $step->settings['custom'] . '/' . basename($file->filepath);
+  }
+
+  // Create a full URI
+  $destination =  's3://' . $step->settings['mm_s3_bucket'] . '/' . $s3_filename;
+
+  // Do we have any custom headers that need to be parsed?
+  if ($requests = $step->settings['advanced_request_headers']) {
+    $requests = explode("\n", $requests);
+    foreach ($requests as $request) {
+      $request = trim($request);
+      $header = explode('|', $request);
+      $headers[$header[0]] = $header[1];
+    }
+  }
+
+  // Put file on amazon
+  if (! mm_s3_copy($file->filepath, $destination, $step->settings['mm_s3_perm'], $headers)) {
+    return FALSE;
+  }
+
+  // We return a file which is HTTP accessible. In the future this is likely
+  // to just be a URI
+  $path = mm_s3_create_url($step->settings['s3_domain'], $step->settings['mm_s3_bucket'], $s3_filename);
+
+  // S3 data for the file so that it can be loaded later
+  $data = array(
+    'perms' => $step->settings['mm_s3_perm'],
+    'roles' => $step->settings['mm_s3_drupal_perms_roles'],
+    'expire' => $step->settings['mm_s3_drupal_perms_time'],
+    'bucket' => $step->settings['mm_s3_bucket'],
+    'path' => $path,
+    'uri' => $destination,
+    'domain' => $step->settings['s3_domain'],
+  );
+  $file->data_set('s3', $data);
+
+  return $path;
+}
+
+
+/**
+ * Initialize a S3 connection
+ */
+function mm_s3_initialize($key = FALSE, $skey = FALSE) {
+  static $s3;
+
+  if (! $s3) {
+    $key = $key ? $key : variable_get('mm_s3_key', NULL);
+    $skey = $skey ? $skey : variable_get('mm_s3_skey', NULL);
+
+    module_load_include('php', 'mm_s3', 'S3');
+    $s3 = new S3($key, $skey, FALSE);
+    // Check the login
+    $result = $s3->checkKeys();
+    // Could we login?
+    if ($result === TRUE) {
+      return $s3;
+    }
+    // Were errors passed back?
+    if ($result) {
+      drupal_set_message(t('There was an error in your S3 account information: <br />!error: !description <br/>Please update your !settings',
+        array('!error' => $result['code'], '!description' => $result['message'], '!settings' => l(t('settings'), 'admin/build/media_mover/settings'))),
+        'error'
+      );
+      return FALSE;
+    }
+  }
+  return $s3;
+}
+
+/**
+ * Wrapper function for is_dir() for stream wrappers in the future
+ *
+ * @param $bucket_name
+ *   string
+ * @param $s3
+ *   s3 object
+ * @return boolean
+ */
+function mm_s3_is_dir($bucket_name) {
+  // load the S3 class
+  if (! $s3 = mm_s3_initialize()) {
+    return FALSE;
+  }
+
+  $bucket_name = mm_s3_parse_uri($bucket_name, 'bucket');
+  // does this bucket exist?
+  $buckets = mm_s3_scandir();
+  if ($buckets) {
+    foreach ($buckets as $bucket) {
+      if ($bucket == $bucket_name) {
+        // bucket exists
+        return TRUE;
+      }
+    }
+  }
+  return FALSE;
+}
+
+
+/**
+ * Wrapper function for scandir() for stream wrappers in the future
+ *
+ * @return array
+ */
+function mm_s3_scandir($bucket_name = FALSE) {
+  // load the S3 class
+  if (! $s3 = mm_s3_initialize()) {
+    return FALSE;
+  }
+  // No bucket name, just return the list of buckes
+  if (! $bucket_name) {
+    return $s3->listBuckets();
+  }
+  // Return a list of files in the bucket
+  return $s3->getBucket(mm_s3_parse_uri($bucket_name, 'bucket'));
+}
+
+
+/**
+ * Wrapper for php file copy for stream wrappers
+ *
+ * @TODO should handle file overwrite conditions
+ *
+ * @param $source
+ *   String, path to resource
+ * @param $destination
+ *   String, first component is the bucket, anything else is the filename. Requires
+ *   to be BUCKET/FILENAME.type
+ * @param $perm
+ *   String, one of ACL_PRIVATE, ACL_PUBLIC_READ, ACL_PUBLIC_READ_WRITE
+ * @param $request_headers
+ *   Array, headers to be set on the Amazon side
+ */
+function mm_s3_copy($source, $destination, $perm = ACL_PUBLIC_READ, $request_headers = array()) {
+  // Ensure that S3 is loaded
+  if (! $s3 = mm_s3_initialize()) {
+    return FALSE;
+  }
+
+  $destination = mm_s3_parse_uri($destination);
+
+  // Default header is the content type
+  // @NOTE not sure if this should be done inside this function- perhaps in the calling one?
+  $request_headers['Content-Type'] = file_get_mimetype($source);
+
+  // Put file on amazon, assume public accessible.
+  $s3->putObjectFile($source, $destination['bucket'], $destination['path'], $perm, NULL, $request_headers);
+
+  // Check for errors
+  $info = $s3->getObjectInfo($destination['bucket'], $destination['path']);
+  // Error check
+  if (! $info['hash']) {
+    // Error condition when trying to put file up
+    $message = 'Could not upload file to amazon. Reporting error: <pre>'. print_r($s3, TRUE) .'</pre>';
+    $link = l('Change S3 Settings',  'admin/settings/media_mover');
+    watchdog('mm_s3', $message, array(), WATCHDOG_ERROR, $link);
+    return FALSE;
+  }
+  return TRUE;
+}
+
+
+/**
+ * Wrapper function for mkdir
+ *
+ * @param unknown_type $dir
+ */
+function mm_s3_mkdir($dir, $perm = ACL_PUBLIC_READ) {
+  // load the S3 class
+  if (! $s3 = mm_s3_initialize()) {
+    return FALSE;
+  }
+
+  // Create the bucket
+  if ($s3->putBucket($dir, $perm)) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+
+/**
+ * Wrapper for unlink
+ *
+ * @param $step
+ *   object, media mover step object
+ * @param $file
+ *   object, media mover file object
+ *
+ */
+function mm_s3_unlink($file) {
+  // load the S3 class
+  if (! $s3 = mm_s3_initialize()) {
+    return FALSE;
+  }
+
+  // Delete the file from the bucket
+  if ($s3->deleteObject($step->settings['mm_s3_bucket'], $file)) {
+    return TRUE;
+  }
+  return FALSE;
+}
+
+
+/**
+ * Utility function to check if user has access to this file
+ *
+ * @param $roles
+ *   Array
+ * @return $access
+ *   Boolean
+ */
+function mm_s3_check_user($roles, $user = NULL) {
+  if (! $user) {
+    global $user;
+  }
+  foreach ($user->roles as $rid => $name) {
+    if (in_array($rid, $roles)) {
+      return TRUE;
+    }
+  }
+  return FALSE;
+}
+
+
+/**
+ * Utility function to parse a path into $bucket, $name components
+ *
+ * @param $path
+ * @param $return
+ *   bucket, path, or both
+ * @return array('bucket' => $bucket, 'path' => $path)
+ */
+function mm_s3_parse_uri($path, $return = FALSE) {
+  // Strip the URI out
+  $path = str_replace('s3://', '', $path);
+  // If the destination starts with a / remove it
+  if (strpos($path, '/') === 0) {
+    $path = substr($path, 1);
+  }
+
+  $path = explode('/', $path);
+  // The bucket name is the first directory from the destination
+  $bucket = $path[0];
+
+  // Get the filepath minus the bucket
+  unset($path[0]);
+  $path = implode('/', $path);
+
+  if ($return == 'bucket') {
+    return $bucket;
+  }
+  if ($return == 'path') {
+    return $path;
+  }
+
+  return array(
+    'bucket' => $bucket,
+    'path' => $path
+  );
+}
+
+
+/**
+ * Utility function to build a url for a file
+ *
+ * @param $domain
+ * @param $bucket
+ * @param $path
+ */
+function mm_s3_create_url($domain, $bucket, $path) {
+  // If this is not the stock S3 domain, do not use the bucket in the URL
+  if (! strstr($domain, 's3.amazonaws.com')) {
+    $bucket = '';
+  }
+  // Since there is a bucket, add a directory
+  else {
+    $bucket = $bucket . '/';
+  }
+  // Remove any trailing / from the domain
+  $domain = preg_replace('/\/$/', '', $domain);
+  // Remove any starting / from the domain
+  $path = preg_replace('/^\//', '', $path);
+  return $domain . '/' . $bucket . $path;
+}
+
+
+/**
+ * Utility function to derive a URI
+ *
+ * @param $file_data
+ */
+function mm_s3_create_uri($file_data = FALSE) {
+  // Is this a S3 private URI?
+  if ($file_data['perms'] == ACL_PRIVATE) {
+    // Check to see if this user has access to this URI
+    if (! mm_s3_check_user($file_data['roles'])) {
+      return FALSE;
+    }
+    $s3 = mm_s3_initialize();
+
+    return($s3->authenticateURL(
+      $file_data['path'],
+      $file_data['bucket'],
+      basename($file_data['uri']),
+      $file_data['expire']
+    ));
+  }
+
+  // This is a public URI
+  return $file_data['path'];
+}
+
+
+/* ************************************ */
+/* XSPF Playlist Integration */
+/* ************************************ */
+
+
+/**
+ * Implementation of hook_xspf_playlist_item_alter().
+ *
+ * This is an ugly way of overriding S3 file paths for
+ * Media Mover
+ *
+ * Add player and bookmark metadata.
+ * @param array $item
+ * @param object $node
+ * @param string $url
+ * @param string $thumb
+ * @param $meta
+ */
+function mm_s3_xspf_playlist_item_alter(&$item, $node, $url) {
+  foreach ($node->media_mover as $cid => $mmfid) {
+    $mmfile = array_shift($mmfid);
+    // Does this file have s3 data?
+    if (isset($mmfile->data['s3']['perms']) && $mmfile->data['s3']['perms'] == ACL_PRIVATE) {
+      // Look for this filepath on on the item
+      if (xspf_playlist_item_get_value($item, 'location') == $mmfile->filepath) {
+        // Get the associated data with this file
+        $filepath = mm_s3_create_uri(FALSE, $mmfile->data['s3']);
+        xspf_playlist_item_set_value($item, array('key' => 'location', 'value' => $filepath), FALSE);
+      }
+    }
+  }
+
+
+}

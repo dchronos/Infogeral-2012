@@ -1,0 +1,16 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * Install file
+ */
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function mm_node_uninstall() {
+  variable_del('mm_node_run_configs');
+}

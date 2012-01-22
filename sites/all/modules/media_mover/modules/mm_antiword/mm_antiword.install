@@ -1,0 +1,26 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * Install file for mm antiword
+ */
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function mm_antiword_uninstall() {
+  // @TODO delete any variables
+
+}
+
+
+/**
+ * Implements hook_install().
+ */
+function mm_antiword_install() {
+  require_once ('mm_antiword.module');
+  mm_antiword_binary_search();
+}

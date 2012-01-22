@@ -1,0 +1,68 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * Install file for mm ftp
+ */
+
+/**
+ * Implements hook_install().
+ */
+function mm_ftp_install() {
+  // Create tables.
+  drupal_install_schema('mm_ftp');
+}
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function mm_ftp_uninstall() {
+  drupal_uninstall_schema('mm_ftp');
+}
+
+
+/**
+ * Implements hook_schema().
+ */
+function mm_ftp_schema() {
+  $schema['mm_ftp_tokens'] = array(
+    'description' => t('Holds user tokens to match against uploaded files'),
+    'fields' => array(
+      'uid' => array(
+        'description' => t('Drupal user ID'),
+        'type' => 'int',
+        'unsigned' => TRUE
+      ),
+      'token' => array(
+        'description' => t('Token value'),
+        'type' => 'text',
+        'size' => 'small'
+      ),
+      'date' => array(
+        'description' => t('Date added'),
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+  );
+  return $schema;
+}
+
+
+/**
+ * Check that the FTP extension exists for PHP.
+ */
+function mm_ftp_requirements($phase) {
+  $has_ftp = function_exists('ftp_connect');
+  $requirements['mm_ftp'] = array(
+    'title' => t('FTP'),
+    'description' => t("Media Mover FTP requires that PHP's !ext is enabled in order to function properly.", array('!ext' => l('FTP extension', 'http://www.php.net/ftp'))),
+    'value' => $has_ftp ? t('Enabled') : t('Not found'),
+    'severity' => $has_ftp ? REQUIREMENT_OK : REQUIREMENT_ERROR,
+  );
+  return $requirements;
+}

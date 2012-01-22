@@ -1,0 +1,572 @@
+<?php
+
+
+/**
+ * @file
+ * This module provides mechanisms to limit
+ * when media mover configurations are run and
+ * reporting on various items
+ */
+
+
+/* ****************************************** */
+/* Drupal Hook Functions                      */
+/* ****************************************** */
+
+/**
+ * Implements hook_cron().
+ */
+function mm_utilities_cron() {
+  // Monitor for stuck files
+  mm_utilities_monitor_files();
+}
+
+
+/**
+ * Implements hook_mail().
+ *
+ * @param unknown_type $key
+ * @param unknown_type $message
+ * @param unknown_type $params
+ * @return unknown_type
+ */
+function mm_utilities_mail($key, &$message, $params) {
+  $language = $message['language'];
+  switch($key) {
+    default:
+      $message['subject'] = t($params['subject'], $params['params'], $language->language);
+      $message['body'][] = t($params['body'], $params['params'], $language->language);
+    break;
+  }
+}
+
+
+/**
+ * Implements hook_form_alter().
+ */
+function mm_utilities_form_alter(&$form, $form_state, $form_id) {
+  // Add to the config add/edit forms
+  if ($form_id == 'media_mover_ui_add_config_form' || $form_id == 'media_mover_ui_config_edit_form') {
+    mm_utilities_configuration_form($form, $form_state);
+  }
+  // Add to the default configuration options
+  if ($form_id == 'media_mover_ui_admin_settings') {
+    mm_utilities_admin_form($form);
+  }
+}
+
+
+
+/* ****************************************** */
+/* Form Functions                             */
+/* ****************************************** */
+
+
+/**
+ * Provides the settigns form, displayed on the default MM settings.
+ *
+ * @return $form
+ */
+function mm_utilities_admin_form(&$form) {
+  $form['#submit'][] = 'mm_utilities_admin_form_submit';
+  $form['mm_utilities'] = array(
+    '#title' => t('Control services'),
+    '#type' => 'fieldset',
+    '#collapsible' => TRUE,
+    '#collapsed' => FALSE,
+  );
+  $form['mm_utilities']['text'] = array(
+    '#type' => 'markup',
+    '#value' => '<p>' . t('Control options provide you with the oppertunity to
+      configure how and when Media Mover configurations are run. When options are
+      enabled here, the configuration form will be displayed on the configuration
+      add and edit forms. Each configuration can have it\'s own settings.'),
+  );
+  $enabled = variable_get('mm_utilities_monitors', array());
+  $form['mm_utilities']['mm_utilities_cpu'] = array(
+    '#title' => t('CPU'),
+    '#type' => 'checkbox',
+    '#default_value' => $enabled['cpu'],
+    '#description' => t('Limit Media Mover configurations when CPU level is high.'),
+  );
+  $form['mm_utilities']['mm_utilities_file_time'] = array(
+    '#title' => t('File monitor'),
+    '#type' => 'checkbox',
+    '#default_value' => $enabled['file_time'],
+    '#description' => t('File duration monitor will email an administrator when a file has
+      been in a action for a set amount of time.'),
+  );
+  $form['mm_utilities']['mm_utilities_file_count'] = array(
+    '#title' => t('File count'),
+    '#type' => 'checkbox',
+    '#default_value' => $enabled['file_count'],
+    '#description' => t('Limit how many files are operated on when a configuration runs'),
+  );
+  $form['mm_utilities']['mm_utilities_node_run'] = array(
+    '#title' => t('Node create/update'),
+    '#type' => 'checkbox',
+    '#default_value' => $enabled['node_run'],
+    '#description' => t('Run configurations when nodes are created and updated.'),
+  );
+  $form['mm_utilities']['mm_utilities_cron'] = array(
+    '#title' => t('Cron'),
+    '#type' => 'checkbox',
+    '#default_value' => isset($enabled['cron']) ? $enabled['cron'] : TRUE,
+    '#description' => t('Enable or disable configurations to run on cron. Default is on.'),
+  );
+}
+
+
+/**
+ * Saves the control data
+ *
+ * @param $form
+ * @param $form_state
+ * @return unknown_type
+ */
+function mm_utilities_admin_form_submit($form, $form_state) {
+  $options = array();
+  foreach ($form_state['values'] as $key => $value) {
+    if (strpos($key, 'mm_utilities') !== FALSE && $value) {
+      $key = str_replace('mm_utilities_', '', $key);
+      $options[$key] = TRUE;
+    }
+  }
+  variable_set('mm_utilities_monitors', $options);
+}
+
+
+/**
+ * Updates the media mover configuration add/edit form
+ *
+ * @param unknown_type $form
+ * @return unknown_type
+ */
+function mm_utilities_configuration_form(&$form, $form_state) {
+  if ($enabled = variable_get('mm_utilities_monitors', FALSE)) {
+
+    $configuration = $form['#configuration'];
+    $configuration = $form_state['values'] ? (object)($form_state['values']['configuration']) : $configuration;
+
+    $form['mm_utilities'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Run time control'),
+      '#description' =>  t('Control options provide you with the oppertunity to configure how and when this configuration is run.'),
+      '#collapsed' => TRUE,
+      '#collapsible' => TRUE,
+      '#parents' => array('configuration', 'settings'),
+      '#tree' => TRUE,
+    );
+
+    // File duration monitor
+    if ($enabled['file_time']) {
+      $form['mm_utilities']['email_monitor'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Email monitoring'),
+        '#collapsible' => TRUE,
+        '#collapsed' => $configuration->settings['email_monitor']['mm_utilities_email_file'] ? false : true,
+        '#description' => t('Sometimes a files fail to complete during processing.
+          If a file is running longer than the specified time, an email will be sent'),
+      );
+      $form['mm_utilities']['email_monitor']['mm_utilities_email_file'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Notify admin when a MM file has run to long'),
+        '#default_value' => $configuration->settings['email_monitor']['mm_utilities_email_file'],
+      );
+      $form['mm_utilities']['email_monitor']['mm_utilities_email_file_email'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Email address to notify'),
+        '#default_value' => $configuration->settings['email_monitor']['mm_utilities_email_file_email'],
+        '#description' => t('Email address to notify that a MM job has taken more than the set time.'),
+      );
+      $form['mm_utilities']['email_monitor']['mm_utilities_email_file_time'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Monitor time'),
+        '#default_value' => $configuration->settings['email_monitor']['mm_utilities_email_file_time'],
+        '#description' => t('Minimum file running time before a notification is sent. Enter time in minutes'),
+        '#size' => 4,
+      );
+    }
+
+    // CPU threshold monitor
+    if ($enabled['cpu']) {
+      $form['mm_utilities']['cpu_monitor'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('CPU monitoring'),
+        '#collapsible' => TRUE,
+        '#collapsed' => $configuration->settings['cpu_monitor']['mm_utilities_cpu'] ? false : true,
+        '#description' => t('Prevent the configuration from running when CPU load level is high.'),
+      );
+      $form['mm_utilities']['cpu_monitor']['mm_utilities_cpu'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Check CPU load before running.'),
+        '#default_value' => $configuration->settings['cpu_monitor']['mm_utilities_cpu'],
+      );
+      $options = drupal_map_assoc(array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10));
+      $form['mm_utilities']['cpu_monitor']['mm_utilities_cpu_threshold'] = array(
+        '#title' => t('CPU threshold'),
+        '#type' => 'select',
+        '#options' => $options,
+        '#default_value' => $configuration->settings['cpu_monitor']['mm_utilities_cpu_threshold'],
+        '#description' => t('Set the CPU load where this configuration should no longer be run.'),
+      );
+      $options = array(1 => t('1 minute'), 2 => t('5 minute'), 3 => t('15 minute'));
+      $form['mm_utilities']['cpu_monitor']['mm_utilities_cpu_average'] = array(
+        '#title' => t('CPU sample'),
+        '#type' => 'select',
+        '#options' => $options,
+        '#default_value' => $configuration->settings['cpu_monitor']['mm_utilities_cpu_average'],
+        '#description' => t('Select the 1, 5, or 15 minute CPU load average to use as the threshold.'),
+      );
+    }
+
+    // Run on node create/update
+    if ($enabled['node_run']) {
+      $form['mm_utilities']['node_run_enabled'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Node create/update'),
+        '#collapsible' => TRUE,
+        '#collapsed' =>  $configuration->settings['node_run_enabled']['mm_utilities_node_run'] ? FALSE : TRUE,
+      );
+
+      $form['mm_utilities']['node_run_enabled']['mm_utilities_node_run'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Node create/update'),
+        '#default_value' => $configuration->settings['node_run_enabled']['mm_utilities_node_run'],
+        '#description' => t('When nodes are created or updated run this configuration.
+          This is only usefull for configurations that harvest files from nodes'),
+      );
+    }
+
+    // Limit by file_count. 
+    if ($enabled['file_count']) {
+      $form['mm_utilities']['file_count_settings'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('File Count Limit'),
+        '#collapsible' => TRUE,
+        '#collapsed' =>  $configuration->settings['file_count_settings']['mm_utilities_file_count'] ? FALSE : TRUE,
+      );
+
+      $form['mm_utilities']['file_count_settings']['mm_utilities_file_count'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Limit each run to this many files'),
+        '#default_value' => isset($configuration->settings['file_count_settings']['mm_utilities_file_count']) ? $configuration->settings['file_count_settings']['mm_utilities_file_count'] : 0,
+        '#description' => t('Limit the number of files to this many for each run (0 equals unlimited).'),
+      );
+    }
+    // Run on cron
+    if ($enabled['cron']) {
+      $form['mm_utilities']['cron_settings'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Cron'),
+        '#collapsible' => TRUE,
+        '#collapsed' =>  $configuration->settings['cron_settings']['mm_utilities_cron'] ? FALSE : TRUE,
+      );
+
+      $form['mm_utilities']['cron_settings']['mm_utilities_cron'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Run on cron'),
+        '#default_value' => isset($configuration->settings['cron_settings']['mm_utilities_cron']) ? $configuration->settings['cron_settings']['mm_utilities_cron'] : TRUE,
+        '#description' => t('Enable or disable this configuration to run when Drupal\'s cron runs.'),
+      );
+    }
+  }
+}
+
+/* ****************************************** */
+/* Monitor Functions                          */
+/* ****************************************** */
+
+
+/**
+ * Checks for files that have run too long
+ * @TODO
+ */
+function mm_utilities_monitor_files() {
+  $configurations = media_mover_api_configurations_load();
+  foreach ($configurations as $cid => $configuration) {
+    if (!$configuration->settings['email_monitor']['mm_utilities_email_file']) { 
+      continue;
+    }
+    // Only send one email per email frequency per configuration
+    if ($configuration->settings['email_monitor']['mm_utilities_email_last_sent'] > (time() - variable_get('mm_utilities_email_frequency', 3600))) {
+      continue;
+    }
+    $rows = array();
+    $time = time() - ($configuration->settings['email_monitor']['mm_utilities_email_file_time'] * 60);
+    $results = db_query("SELECT mmfid, cid, lock_date FROM {media_mover_files} WHERE lock_date < %d AND status = '%s' AND cid = '%s' ORDER BY lock_date", $time, MMA_FILE_STATUS_LOCKED, $cid);
+    while ($result = db_fetch_array($results)) {
+      $rows[] = t('!mmfid | !date | !link', array(
+        '!mmfid' => $result['mmfid'],
+        '!date' => format_date($result['lock_date']),
+        '!link' => l($result['mmfid'], '/admin/build/media_mover/file/edit/' . $result['mmfid'], array('absolute' => TRUE))
+      ));
+    }
+
+    // Nothing to report.
+    if (empty($rows)) {
+      continue;
+    }
+
+    $message = 'Media Mover\'s file monitor found files running longer than normal.
+You may want to consider decreasing your cron.php frequency or increase your PHP timeout,
+or examine the following configurations to see if there is a particular issue with them.';
+    $message .= "\n\n" . implode("\n", $rows);
+
+    $params = array(
+      '!name' => $configuration->name,
+      '!time' => intval( (time() - $configuration->start_time) / 60),
+      '!site_name' => variable_get('site_name', '')
+    );
+
+    $email_params = array(
+      'subject' => '[!site_name] Media Mover Monitor: long running files',
+      'body' => $message,
+      'params' => $params
+    );
+
+    // Only send one email per email frequency per configuration
+    $configuration->settings['email_monitor']['mm_utilities_email_last_sent'] = time();
+    $configuration->save();
+    drupal_mail('mm_utilities', 'long_running_files', $configuration->settings['email_monitor']['mm_utilities_email_file_email'], language_default(), $email_params);
+
+  }
+}
+
+
+/**
+ * Get the current CPU load
+ *
+ * @param $time
+ *   Int, 1,5,15 averages
+ * @return $load
+ *   Float, load value
+ */
+function mm_utilities_cpu_load($time = NULL) {
+  if (! $time) {
+    $time = variable_get('mma_cpu_limit_sample', 5);
+  }
+  ob_start();
+    passthru('w' ." 2>&1", $command_return);
+    $command_output = ob_get_contents();
+  ob_end_clean();
+
+  // split the output
+  $pattern = "/.*load averages: ([0-9\.]*) ([0-9\.]*) ([0-9\.]*)/";
+  preg_match($pattern, $command_output, $matches);
+  return $matches[$time];
+}
+
+
+/* ****************************************** */
+/* Media Mover Functions                      */
+/* ****************************************** */
+
+/**
+ * Implements of hook_media_mover().
+ *
+ * @return array
+ */
+function mm_utilities_media_mover() {
+  $items = array();
+  $items['mm_select'] =  array(
+    'description' => t('Select: from a Media Mover configuration'),
+    'configuration' => 'mm_utilties_select_mm_config',
+    'callback' => 'mm_utilities_select_mm',
+    'harvest' => TRUE,
+  );
+  $items['mm_utilities_delete'] =  array(
+    'description' => t('Process: delete source material'),
+    'configuration' => 'mm_utilties_delete_file_cruft_config',
+    'callback' => 'mm_utilities_delete_file_cruft',
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_media_mover_process_control().
+ *
+ * @param $step
+ *   Object, Media Mover step object
+ * @return
+ *   Boolean, TRUE if the step can run, FALSE if not
+ */
+function mm_utilities_media_mover_process_control_alter(&$errors, $file, $step) {
+  static $control_files = array();
+
+  static $run_count = array();
+
+  $configuration = media_mover_api_configuration_load($step->cid);
+  
+    // CPU limiting
+  if ($configuration->settings['cpu_monitor']['mm_utilities_cpu_load']) {
+    $load = mm_utilities_cpu_load($configuration->settings['cpu_monitor']['mm_utilities_cpu_average']);
+    // Is the CPU load higher than the threshold?
+    if ($load >= $configuration->settings['cpu_monitor']['mm_utilities_cpu_threshold']) {
+      $errors[] = t('mm_utlities: CPU level prevented processing');
+    }
+  }
+
+  // File count limiting.
+  if ($configuration->settings['file_count_settings']['mm_utilities_file_count']) {
+    if ($run_count[$step->sid] >= $configuration->settings['file_count_settings']['mm_utilities_file_count']) {
+      $errors[] = t('mm_utlities: Run count level prevented processing');
+    }
+    $run_count[$step->sid]++;
+  }
+
+  // Cron limiting
+  if (! $configuration->settings['cron_settings']['mm_utilities_cron']) {
+    // Check to see if cron is currently running. We can only do this by
+    // looking up the function call stack to make this thread safe
+    $backtrace = debug_backtrace();
+    // We are looking for the drupal_cron_run function
+    foreach ($backtrace as $function_call) {
+      if ($function_call['function'] == 'drupal_cron_run') {
+        $errors[] = t('mm_utlities: This configuration !configuration does not run on cron', array('!configuration' => $configuration->name));
+      }
+    }
+  }
+}
+
+
+/**
+ * Configuration for harvesting files from Media Mover configurations
+ *
+ * @param $step
+ *   Object, Media Mover step
+ * @return $form
+ *   Array
+ */
+function mm_utilties_select_mm_config($step) {
+  $form = array();
+  $form['mm_utilities_conf_mm'] = array(
+    '#type' => 'markup',
+    '#description' => t('This will select files from other Media Mover configurations.
+      By choosing the last step in a the configuration you have choosen you will
+      get the output file of the configuration'),
+  );
+
+  $configurations = media_mover_api_configurations_load();
+  foreach ($configurations as $cid => $configuration) {
+    foreach ($configuration->steps as $step) {
+      $options[$configuration->name][$cid . '--' . $step->sid] = ' - ' . $step->name;
+    }
+  }
+
+  if ($options) {
+    // usually you want to work with the complete_file, but sometimes the process_file
+    // is needed when the complete_file is stored in say S3 (i.e. not locally)
+    $form['mm_utilities_conf_mm']['mm_utilities_mm_select_from'] = array(
+      '#title' => t('Specify Files'),
+      '#type' => 'select',
+      '#options' => $options,
+      '#default_value' => $step->settings['mm_utilities_mm_select_from'],
+      '#description' => t('Select the configuration and step that you wish to select files from.
+        if you only choose a configuration, the file file for that configuration will be used.')
+    );
+  }
+  else {
+    $form['mm_utilities_conf_mm']['alert'] = array(
+      '#type' => 'markup',
+      '#value' => t('Sorry, there are no Media Mover configurations in the system. Please create one first.'),
+    );
+  }
+  return $form;
+}
+
+
+/**
+ * Configuration for deleting files created during a configuration run
+ *
+ * @param $step
+ *   Object, Media Mover step object
+ * @return $form
+ *   Array, Drupal form array
+ */
+function mm_utilties_delete_file_cruft_config($step) {
+  $form = array();
+  $form['mm_utilities_cruft'] = array(
+    '#type' => 'markup',
+    '#value' => t('This will delete all files created by this Media Mover
+      configuration except for the original source file and the output file.'),
+  );
+  $form['mm_utilities_cruft_source'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Delete source'),
+    '#default_value' => $step->settings['mm_utilities_cruft_source'],
+    '#description' => t('Delete the source material. WARNING: enabling this
+      will remove original content forever. Enable this only if you are
+      certian that you will never need this material again.')
+  );
+
+  return $form;
+}
+
+
+
+/**
+ * Harvest files from media mover files
+ *
+ * @param $step
+ *   Object, step being run
+ * @param $nid
+ *   Int, optional , nid to search for
+ * @return array $files
+ */
+function mm_utilities_select_mm($step) {
+  // Get the configuration ID that we're using
+  list($cid, $step_order) = explode('--', $step->settings['mm_utilities_mm_harvest_from']);
+
+  // We find files that are more recent that the last time that
+  // this harvest process
+  $results = db_query("SELECT mmf.mmfid AS mmfid
+    FROM {media_mover_files} mmf
+    WHERE mmf.cid = '%s'
+    AND mmf.status = '%s' AND mmf.date >= %d",
+    $cid, MMA_FILE_STATUS_FINISHED, $step->cid, $step->stop_time);
+
+  // We have our files, now pull them out of the db;
+  while ($result = db_fetch_array($results)) {
+    // Load the file
+    $file = media_mover_api_file_get($result['mmfid']);
+    // Retrive the filepath from the previous file
+    $files[] = $file->retrive_filepath($step_order);
+  }
+  return $files;
+}
+
+
+/**
+ * Delete the files created durring a Media Mover configuration run
+ *
+ * @param $step
+ *   Object, Media Mover step object
+ * @param $file
+ *   Object, Media Mover file object
+ * @return
+ */
+function mm_utilities_delete_file_cruft($step, $file) {
+  // Get the configruation
+  $configuration = media_mover_api_configuration_load($file->cid);
+  foreach ($configuration->steps as $step_order => $step) {
+    // Get the file for this step
+    $step_filepath = $file->data['files'][$step->step_order];
+    if ($step_filepath != $file->filepath) {
+      // Does this step use a custom delete function?
+      if ($function = $step->build['delete']) {
+        if (function_exists($function)) {
+          $function($delete);
+        }
+      }
+      // Just try to delete the file
+      else {
+        if (file_exists($file->filepath)) {
+          unlink($file->filepath);
+        }
+      }
+    }
+  }
+  return TRUE;
+}

@@ -1,0 +1,87 @@
+<?php
+
+
+/**
+ * @file
+ * Handles interactions between media mover and imagecache
+ */
+
+
+/**
+ * Implements hook_media_mover().
+ */
+function mm_imagecache_media_mover() {
+  $items = array();
+  $items['imagecache'] = array(
+    'description' => t('Transform: create new images with ImageCache'),
+    'callback' => 'mm_imagecache_process',
+    'configuration' => 'mm_imagecache_configure',
+  );
+  return $items;
+}
+
+
+/**
+ * Configuration settings for the imagecache actions
+ *
+ * @param $step
+ *   Object, Media Mover step object
+ * @return Drupal form array
+ */
+function mm_imagecache_configure($step) {
+  // Get all the imagecache presets
+  $presets = imagecache_presets();
+  foreach ($presets as $preset) {
+    $options[$preset['presetname']] = $preset['presetname'];
+  }
+  $form['imagecaches'] = array(
+    '#type' => 'select',
+    '#multiple' => TRUE,
+    '#title' => t('Imagecaches derivatives'),
+    '#options' => $options,
+    '#default_value' => $step->settings['imagecaches'],
+    '#description' => t('Select which Imagecache actions you would like performed on your file.'),
+  );
+  return $form;
+}
+
+
+/**
+ * This saves a harvested file to a directory location specified in the configuration
+ *
+ * @param array $file
+ * @param array $configuration
+ * @param int $action
+ * @return string
+ */
+function mm_imagecache_process($step, $file) {
+  // Check the mimetype
+  if (strpos(file_get_mimetype($file->filepath), 'image') === FALSE) {
+    watchdog('mm_imagecache', 'Unsupported mimetype for imagecache converstion: %file', array('%file', '<pre>' . print_r($file, TRUE) . '</pre>'), WATCHDOG_ERROR);
+    return FALSE;
+  }
+  // Run imagecache functions of each cache
+  foreach ($step->settings['imagecaches'] as $imagecache_name) {
+    // Get the imagecache preset from the preset name
+    $preset = imagecache_preset_by_name($imagecache_name);
+    // @TODO should we the destination URL to be configurable? By default, it would be here:
+    $destination = imagecache_create_path($preset['presetname'], $file->filepath);
+
+    // Process the actual file
+    if (imagecache_build_derivative($preset['actions'], $file->filepath, $destination) === FALSE) {
+      watchdog('mm_imagecache', 'Failed to create imagecache preset: %name for %file', array('%name' => $preset['presetid'], '%file' => '<pre>' . print_r($file, TRUE) . '</pre>'), WATCHDOG_ERROR);
+      return FALSE;
+    }
+
+    // If there are mutliple imagecache actions being run, the first one belongs
+    // to the Media Mover file that started the process, otherweise we create new files
+    if (! isset($return_filepath)) {
+      $return_filepath = $destination;
+    }
+    else {
+      media_mover_api_file_create_derivative($file, $destination);
+    }
+  }
+
+  return $return_filepath;
+}

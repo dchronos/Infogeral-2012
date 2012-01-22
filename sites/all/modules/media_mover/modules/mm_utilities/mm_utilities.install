@@ -1,0 +1,34 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ * Installation for run control
+ */
+
+
+/**
+ * Install the token table
+ */
+function mm_utilities_install() {
+  // Create tables.
+  drupal_install_schema('mm_utilities');
+}
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function mm_utilities_uninstall() {
+  drupal_uninstall_schema('mm_utilities');
+}
+
+
+/**
+ * Implementation of hook_schema().
+ */
+function mm_utilities_schema() {
+  $schema = array();
+  return $schema;
+}

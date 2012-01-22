@@ -1,0 +1,244 @@
+<?php
+
+// $Id$
+
+/**
+ * @file
+ */
+
+
+
+/**
+ * Implements hook_install().
+ */
+function media_mover_api_install() {
+}
+
+
+/**
+ * Implements hook_uninstall().
+ */
+function media_mover_api_uninstall() {
+  // @TODO delete any variables here
+}
+
+
+/**
+ * Implements hook_schema().
+ *
+ */
+function media_mover_api_schema() {
+  $schema['media_mover_files'] = array(
+    'description' => 'Holds file data for a specific  Media Mover file.',
+    'fields' => array(
+      'mmfid' => array('type' => 'serial'),
+      'nid' => array('type' => 'int', 'unsigned' => TRUE),
+      'fid' => array('type' => 'int', 'unsigned' => TRUE, 'description' => 'Drupal file id'),
+      'cid' => array('type' => 'varchar', 'length' => 255, 'default' => '', 'description' => 'Configuration machine name ID'),
+      'step_order' => array('type' => 'int', 'unsigned' => TRUE, 'description' => 'Step order that this file is currently in'),
+      'source_uri' => array(
+        'type' => 'text',
+        'size' => 'medium',
+        'description' => 'Originally selected file',
+      ),
+      'uri' => array(
+        'type' => 'text',
+        'size' => 'medium',
+        'description' => 'Current file uri',
+      ),
+      'filesize' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'description' => 'Filesize',
+      ),
+      'status'  => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => NULL,
+        'description' => 'What status is this file currently in?',
+      ),
+      'date' => array(
+        'description' => 'The Unix timestamp when the file was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'lock_date' => array(
+        'description' => 'The Unix timestamp when the file was locked.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'data' => array(
+        'type' => 'text',
+        'not null' => FALSE,
+        'size' => 'big',
+        'serialize' => TRUE,
+        'description' => 'All data associated with this file',
+      ),
+    ),
+    'indexes' => array(
+      'mmfid' => array('mmfid'),
+      'nid' => array('nid'),
+      'cid' => array('cid'),
+      'fid' => array('fid'),
+      'cid, fid' => array('cid', 'fid'),
+    ),
+    'primary key' => array('mmfid')
+  );
+
+  $schema['media_mover_steps'] = array(
+    'description' => 'Data for a specific step inside a Media Mover configuration.',
+    'fields' => array(
+      'sid' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+        'description' =>
+        'Step machine name ID'
+      ),
+      'name' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+        'description' => 'Name of the step'
+      ),
+      'module'  => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => ''
+      ),
+      'action_id'  => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => ''
+      ),
+      'settings'  => array(
+        'serialize' => TRUE,
+        'type' => 'text',
+        'size' => 'medium',
+        'description' => 'Serialize settings data for this step.',
+      ),
+      'cid' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => '',
+        'description' => 'Configuration machine name ID'
+      ),
+      'step_order' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'description' =>
+        'Order that this step is in the configuration'
+      ),
+      'status' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'description' => 'Empty or locked',
+      ),
+      'start_time'  => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'stop_time'  => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0
+      ),
+    ),
+    'export' => array(
+      'key' => 'sid',
+      'identifier' => 'step',
+      'default hook' => 'default_media_mover_api_step',  // Function hook name.
+      'api' => array(
+        'owner' => 'media_mover_api',
+        'api' => 'default_media_mover_api_steps',  // Base name for api include files.
+        'minimum_version' => 1,
+        'current_version' => 1,
+      ),
+      'object' => 'media_mover_step',
+    ),
+    'primary key' => array('sid'),
+    'indexes' => array(
+      'sid' => array('sid'),
+    ),
+  );
+
+  $schema['media_mover_configurations'] = array(
+    'description' => 'The Media Mover configuration description.',
+    'fields' => array(
+      'cid'  => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+        'description' => 'Configuration machine name ID'
+      ),
+      'name'  => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'default' => ''
+      ),
+      'description'  => array(
+        'type' => 'text',
+        'size' => 'normal'
+      ),
+      'status' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'description' => 'One of: enabled, disabled, overridden',
+      ),
+      'settings'  => array(
+        'serialize' => TRUE,
+        'type' => 'text',
+        'size' => 'medium',
+        'description' => 'Serialized array of configuration data not specific to a step in the configuration.',
+      ),
+      'weight'  => array('type' => 'int', 'unsigned' => TRUE),
+    ),
+    'export' => array(
+      'key' => 'cid',
+      'identifier' => 'configuration', // Exports will be defined as $preset
+      'default hook' => 'default_media_mover_api_configurations',  // Function hook name.
+      'object' => 'media_mover_configuration',
+      'api' => array(
+        'owner' => 'media_mover_api',
+        'api' => 'default_media_mover_api_configurations',  // Base name for api include files.
+        'minimum_version' => 1,
+        'current_version' => 1,
+      ),
+    ),
+    'primary key' => array('cid'),
+    'indexes' => array(
+      'cid' => array('cid'),
+    ),
+  );
+
+  // cache schema
+  $schema['cache_media_mover'] = drupal_get_schema_unprocessed('system', 'cache');
+  $schema['cache_media_mover']['description'] = 'Cache table for the Media Mover module to store configuration and node data';
+
+  return $schema;
+}
+
+
+/**
+ * Updates from the 6.1x version
+ *
+ * @TODO implement this from 6.1 AND 6.2x
+ */
+function media_mover_api_7101() {
+  /*
+  SEE: http://drupal.org/node/428854
+  media_mover_api.install
+  Rename media_mover_configurations to media_mover_steps
+  Rename media_mover_steps.verb to media_mover_steps.step
+  Add media_mover_steps.name
+
+  Rename media_mover_config_list to media_mover_configurations
+
+  Update media_mover_files - move all files into a serialized files col
+
+   */
+}

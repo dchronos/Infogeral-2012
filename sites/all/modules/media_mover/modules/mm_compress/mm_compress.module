@@ -1,0 +1,279 @@
+<?php
+
+
+/**
+ * @file
+ * Provides compress and decompress functionality
+ *
+ * @NOTE: much of this can probably be removed in D7 because of
+ *        the utilities that are baked in
+ */
+
+/**
+ * Implements hook_media_mover().
+ *
+ * @return array
+ */
+function mm_compress_media_mover() {
+  $items = array();
+  $items['compression'] = array(
+    'description' => t('Transform: compress file'),
+    'callback' => 'mm_compress_compress',
+    'configuration' => 'mm_compress_compress_config',
+  );
+  $items['decompression'] = array(
+    'description' => t('Transform: decompress file'),
+    'callback' => 'mm_compress_decompress',
+    'configuration' => 'mm_compress_decompress_config',
+  );
+  return $items;
+}
+
+
+/**
+ * Creates the configuration form
+ *
+ * @param $step
+ *   object, media mover step
+ * @return array
+ */
+function mm_compress_compress_config($step) {
+  $form['mm_compress'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('File Compression'),
+    '#description' => t('This compresses files with the a compression utility.'),
+    '#collapsed' => FALSE,
+  );
+  $form['mm_compress']['compress_type'] = array(
+    '#type' => 'select',
+    '#title' => t('Chose the compression type'),
+    '#options' => mm_compress_compress_enabled_binaries(),
+    '#default_value' => $step->settings['compress_type']
+  );
+  return $form;
+}
+
+
+/**
+ * Creates the configuration form
+ *
+ * @param $step
+ *   object, media mover step
+ * @return array
+ */
+function mm_compress_decompress_config($step) {
+  $form['mm_decompress'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('File decompress'),
+    '#description' => t('This will attempt to decompress a file. If the file is
+      not compressed or not a supported type, it will pass the file on. The
+      following types are supported: %types',
+      array('%types' => implode(', ', mm_compress_decompress_enabled_binaries()))
+      ),
+    '#collapsed' => FALSE,
+  );
+  return $form;
+}
+
+
+/**
+ * Runs the actual processing of the file
+ *
+ * @param $file
+ *   media mover file array
+ * @param $configuration
+ *   media mover configuration
+ * @return string
+ */
+function mm_compress_compress($step, &$file) {
+  $command = mm_compress_compress_binary_command($step->settings['compress_type']);
+  $extension = mm_compress_compress_binary_extension($step->settings['compress_type']);
+  $output_filepath = $file->filepath . '.' . $extension;
+  // Do the token replacement
+  $search = array(
+    '%in',
+    '%out'
+  );
+  $replace = array(
+    $file->filepath,
+    // Note that this is not always used
+    $output_filepath
+  );
+  // Do the token replacement
+  $command = str_replace($search, $replace, $command);
+  // Run the command
+  exec(escapeshellcmd($command));
+  if (file_exists($output_filepath)) {
+    $file->filepath = $output_filepath;
+    return $output_filepath;
+  }
+  watchdog('mm_compress', 'Filed to compress file with !command', array('!command' => $command), WATCHDOG_ERROR);
+  return FALSE;
+}
+
+
+/**
+ * Run the decompression process
+ *
+ * @param $step
+ * @param $file
+ */
+function mm_compress_decompress($step, $file) {
+  // Get the file extension
+  $extension = pathinfo($file->filepath, PATHINFO_EXTENSION);
+  // Get the commands
+  $command = mm_compress_decompress_extension_functions($extension);
+  // Do the token replacement
+  $search = array(
+    '%in',
+    '%out'
+  );
+  $replace = array(
+    $file->filepath,
+    // Note that this is not used by some binaries
+    dirname($file->filepath)
+  );
+  // Do the token replacement
+  $command = str_replace($search, $replace, $command);
+  if (exec(escapeshellcmd($command))) {
+    // Remove the file extension
+    return dirname($filepath) . '/' . basename($filepath);
+  }
+  return FALSE;
+
+  // @TODO do we move the file?
+
+}
+
+
+/**
+ * Returns a list of binaries that are enabled
+ */
+function mm_compress_compress_enabled_binaries() {
+  $binaries = mm_compress_compress_functions();
+  foreach ($binaries as $name => $binary) {
+    $return[] = $name;
+  }
+  return $return;
+}
+
+
+/**
+ * Returns a list of compress commands. Optionally returns a specific command
+ *
+ * @param $binary
+ *   Return a command for the specified binary
+ */
+function mm_compress_compress_binary_command($binary) {
+  $binaries = mm_compress_compress_functions();
+  return array_shift($binaries[$binary]);
+}
+
+
+/**
+ * Returns a file extension for a given binary
+ *
+ * @param $binarymm_compress_compress_binary
+ */
+function mm_compress_compress_binary_extension($binary) {
+  $binaries = mm_compress_compress_functions();
+  return key($binaries[$binary]);
+}
+
+
+/**
+ * Returns a list of compressing binaries
+ */
+function mm_compress_compress_functions() {
+  // Here's a list of possible options:
+  $types = array(
+    'tar' => array(
+      'tgz' => 'tar -czf %out %in'
+    ),
+    'gzip' => array(
+      'gz' => 'gzip %in'
+    ),
+    'bzip2' => array(
+      'bz2' => 'bzip2 %in'
+    )
+  );
+  $enabled = array();
+  foreach ($types as $name => $execute) {
+    if (exec('export PATH=$PATH:/sw/bin:/bin:/usr/bin; which '. $name)) {
+      $enabled[$name] = $execute;
+    }
+  }
+  return $enabled;
+}
+
+
+/**
+ * Returns a list of binaries that are enabled
+ */
+function mm_compress_decompress_enabled_binaries() {
+  $binaries = mm_compress_decompress_functions();
+  foreach ($binaries as $name => $binary) {
+    $return[] = $name;
+  }
+  return $return;
+}
+
+
+/**
+ * Returns a list of decompress commands. Optionally returns a specific command
+ *
+ * @param $extension
+ *   Return a command for the specified extension
+ */
+function mm_compress_decompress_extension_functions($extension = FALSE) {
+  $binaries = mm_compress_decompress_functions();
+  foreach ($binaries as $name => $extensions) {
+    foreach ($extensions as $extension => $command) {
+      $return[$extension] = $command;
+    }
+  }
+  if ($extension) {
+    return $return[$extension];
+  }
+  return $return;
+}
+
+
+/**
+ * Returns a list of decompressing binaries
+ */
+function mm_compress_decompress_functions() {
+  // Here's a list of possible options:
+  $types = array(
+    'tar' => array(
+      'tar' => 'tar -xf %in -C %out',
+      'tgz' => 'tar -xzf %in -C %out',
+    ),
+    'gunzip' => array(
+      'gz' => 'gunzip %in'
+    ),
+    'bunzip2' => array(
+      'bunzip2' => 'bunzip %in'
+    )
+  );
+  $enabled = array();
+  foreach ($types as $name => $execute) {
+    if (exec('export PATH=$PATH:/sw/bin:/bin:/usr/bin; which '. $name)) {
+      $enabled[$name] = $type;
+    }
+  }
+  return $enabled;
+}
+
+
+/**
+ * Utility function to handle duplicate extensions
+ * Enter description here ...
+ * @param unknown_type $filename
+ */
+function mm_compress_decompress_alias($filename) {
+  $aliases = array(
+    '.tar.gz' => 'tgz'
+  );
+
+}
